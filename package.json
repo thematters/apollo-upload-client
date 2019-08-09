@@ -24,7 +24,8 @@
     "native"
   ],
   "files": [
-    "lib"
+    "lib",
+    "index.d.ts"
   ],
   "main": "lib",
   "sideEffects": false,
