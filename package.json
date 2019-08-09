@@ -31,6 +31,9 @@
   "engines": {
     "node": ">=8.5"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "browserslist": "> 0.5%, not dead, node >= 8.5",
   "dependencies": {
     "@babel/runtime": "^7.5.4",
