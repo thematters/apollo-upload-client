@@ -1,4 +1,4 @@
-const { ApolloLink, Observable } = require('apollo-link')
+const { ApolloLink, Observable, fromError } = require('apollo-link')
 const {
   selectURI,
   selectHttpOptionsAndBody,
@@ -8,6 +8,82 @@ const {
   parseAndCheckHttpResponse
 } = require('apollo-link-http-common')
 const { extractFiles, ReactNativeFile } = require('extract-files')
+
+/**
+ * For GET operations, returns the given URI rewritten with parameters, or a parse error.
+ *
+ * @param {string} chosenURI request URI
+ * @param {Object} body request body
+ * @returns {string | error} Rewrited URI
+ *
+ * reference: https://github.com/apollographql/apollo-link/blob/master/packages/apollo-link-http/src/httpLink.ts
+ */
+function rewriteURIForGET(chosenURI, body) {
+  // Implement the standard HTTP GET serialization, plus 'extensions'. Note
+  // the extra level of JSON serialization!
+  const queryParams = []
+  /**
+   *
+   * @param {string} key key of query string
+   * @param {string} value value of query string
+   */
+  const addQueryParam = (key, value) => {
+    queryParams.push(`${key}=${encodeURIComponent(value)}`)
+  }
+
+  if ('query' in body) addQueryParam('query', body.query)
+
+  if (body.operationName) addQueryParam('operationName', body.operationName)
+
+  if (body.variables) {
+    let serializedVariables
+    try {
+      serializedVariables = serializeFetchParameter(
+        body.variables,
+        'Variables map'
+      )
+    } catch (parseError) {
+      return {
+        parseError
+      }
+    }
+    addQueryParam('variables', serializedVariables)
+  }
+  if (body.extensions) {
+    let serializedExtensions
+    try {
+      serializedExtensions = serializeFetchParameter(
+        body.extensions,
+        'Extensions map'
+      )
+    } catch (parseError) {
+      return {
+        parseError
+      }
+    }
+    addQueryParam('extensions', serializedExtensions)
+  }
+
+  // Reconstruct the URI with added query params.
+  // XXX This assumes that the URI is well-formed and that it doesn't
+  //     already contain any of these query params. We could instead use the
+  //     URL API and take a polyfill (whatwg-url@6) for older browsers that
+  //     don't support URLSearchParams. Note that some browsers (and
+  //     versions of whatwg-url) support URL but not URLSearchParams!
+  let fragment = '',
+    preFragment = chosenURI
+  const fragmentStart = chosenURI.indexOf('#')
+  if (fragmentStart !== -1) {
+    fragment = chosenURI.substr(fragmentStart)
+    preFragment = chosenURI.substr(0, fragmentStart)
+  }
+  const queryParamsPrefix = preFragment.indexOf('?') === -1 ? '?' : '&'
+  const newURI =
+    preFragment + queryParamsPrefix + queryParams.join('&') + fragment
+  return {
+    newURI
+  }
+}
 
 /**
  * A React Native [`File`](https://developer.mozilla.org/docs/web/api/file)
@@ -22,7 +98,7 @@ const { extractFiles, ReactNativeFile } = require('extract-files')
  * @see [React Native `FormData` polyfill source](https://github.com/facebook/react-native/blob/v0.45.1/Libraries/Network/FormData.js#L34).
  * @prop {String} uri Filesystem path.
  * @prop {String} [name] File name.
- * @prop {String} [type] File content type. Some environments (particularly Android) require a valid MIME type; Expo `ImageResult.type` is unreliable as it can be just `image`.
+ * @prop {String} [type] File content type. Some environments (particularly Android) require a valid MIME type Expo `ImageResult.type` is unreliable as it can be just `image`.
  * @example <caption>A camera roll file.</caption>
  * ```js
  * {
@@ -75,7 +151,7 @@ exports.ReactNativeFile = ReactNativeFile
  * @param {Object} options Options.
  * @param {string} [options.uri=/graphql] GraphQL endpoint URI.
  * @param {function} [options.fetch] [`fetch`](https://fetch.spec.whatwg.org) implementation to use, defaulting to the `fetch` global.
- * @param {FetchOptions} [options.fetchOptions] `fetch` options; overridden by upload requirements.
+ * @param {FetchOptions} [options.fetchOptions] `fetch` options overridden by upload requirements.
  * @param {string} [options.credentials] Overrides `options.fetchOptions.credentials`.
  * @param {Object} [options.headers] Merges with and overrides `options.fetchOptions.headers`.
  * @param {boolean} [options.includeExtensions=false] Toggles sending `extensions` fields to the GraphQL server.
@@ -101,14 +177,16 @@ exports.createUploadLink = ({
   includeExtensions
 } = {}) => {
   const linkConfig = {
-    http: { includeExtensions },
+    http: {
+      includeExtensions
+    },
     options: fetchOptions,
     credentials,
     headers
   }
 
   return new ApolloLink(operation => {
-    const uri = selectURI(operation, fetchUri)
+    let uri = selectURI(operation, fetchUri)
     const context = operation.getContext()
 
     // Apollo Engine client awareness:
@@ -126,8 +204,12 @@ exports.createUploadLink = ({
       credentials: context.credentials,
       headers: {
         // Client awareness headers are context overridable.
-        ...(name && { 'apollographql-client-name': name }),
-        ...(version && { 'apollographql-client-version': version }),
+        ...(name && {
+          'apollographql-client-name': name
+        }),
+        ...(version && {
+          'apollographql-client-version': version
+        }),
         ...headers
       }
     }
@@ -166,7 +248,18 @@ exports.createUploadLink = ({
       })
 
       options.body = form
-    } else options.body = payload
+    } else {
+      // Apollo persisted query could be sent using GET method
+      // Request with GET/HEAD method cannot have body
+      // https://github.com/apollographql/apollo-link-persisted-queries#options
+      const method = options.method.toUpperCase()
+      if (method === 'GET') {
+        // Use query instead for GET method
+        const { newURI, parseError } = rewriteURIForGET(uri, body)
+        if (parseError) return fromError(parseError)
+        uri = newURI
+      } else options.body = payload
+    }
 
     return new Observable(observer => {
       // Allow aborting fetch, if supported.
@@ -176,7 +269,9 @@ exports.createUploadLink = ({
       linkFetch(uri, options)
         .then(response => {
           // Forward the response on the context.
-          operation.setContext({ response })
+          operation.setContext({
+            response
+          })
           return response
         })
         .then(parseAndCheckHttpResponse(operation))

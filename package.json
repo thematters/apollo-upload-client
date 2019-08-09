@@ -66,6 +66,7 @@
     "prepare:prettier": "prettier 'lib/**/*.js' readme.md --write",
     "test": "npm run test:eslint && npm run test:prettier && npm run test:size",
     "test:eslint": "eslint .",
+    "test:eslint:fix": "eslint --fix .",
     "test:prettier": "prettier '**/*.{json,yml,md}' -l",
     "test:size": "size-limit",
     "prepublishOnly": "npm test"
