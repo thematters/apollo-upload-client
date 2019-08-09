@@ -1,5 +1,11 @@
 # apollo-upload-client changelog
 
+## 11.0.1
+
+### Minor
+
+- Support Apollo Persisted Queries
+
 ## 11.0.0
 
 ### Major
